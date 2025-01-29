@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"orders/service"
 	"os"
 )
 
@@ -38,7 +39,20 @@ func orderHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Home Page")
+	ch := make(chan string)
+
+	go service.GetHomePageContent(ch)
+
+	var body []string
+
+	for content := range ch {
+		body = append(body, content)
+	}
+
+	_, err := fmt.Fprintf(w, "Home Page\nBody: %#v", body)
+	if err != nil {
+		return
+	}
 }
 
 func main() {
