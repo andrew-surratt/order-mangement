@@ -3,6 +3,7 @@ package service
 import (
 	"html/template"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -29,6 +30,7 @@ type Order struct {
 	Path string
 }
 
+// orderPath returns the local filepath of an order with the identifier `id`
 func orderPath(id string) string {
 	c := GetConfig()
 	return c.datapath + string(os.PathSeparator) + id + ".txt"
@@ -48,33 +50,50 @@ func loadPage(title string) (*OrderData, error) {
 	return &OrderData{Title: title, Body: body}, nil
 }
 
-func OrderListHandler(w http.ResponseWriter, _ *http.Request) {
-	log.Println("[OrderListHandler] Listing orders ")
+func orderDetails(orders chan Order, dir []os.DirEntry, basepath string) {
+	go func() {
+		for _, d := range dir {
+			ext := filepath.Ext(d.Name())
+			orders <- Order{Id: d.Name(), Path: basepath + "/orders/" + strings.TrimSuffix(d.Name(), ext)}
+		}
+		close(orders)
+	}()
+}
+
+func OrdersGetHandler(
+	w http.ResponseWriter,
+	_ *http.Request,
+	readDir func(name string) ([]fs.DirEntry, error),
+	parseFiles func(filenames ...string) (*template.Template, error),
+) OrdersPageParams {
+	log.Println("[OrderListHandler] Listing orders")
 
 	c := GetConfig()
 
-	dir, err := os.ReadDir(c.datapath)
+	dir, err := readDir(c.datapath)
 	if err != nil {
 		log.Println("[OrderListHandler] Error reading orders ", err.Error())
-		return
+		return OrdersPageParams{}
 	}
 
 	files := make([]Order, 0, len(dir))
-	log.Println("[OrderListHandler] Found '", len(dir), "' orders")
-	for _, d := range dir {
-		ext := filepath.Ext(d.Name())
-		files = append(files, Order{Id: d.Name(), Path: c.basepath + "/orders/" + strings.TrimSuffix(d.Name(), ext)})
+	log.Printf("[OrderListHandler] Found '%v' orders", len(dir))
+	orders := make(chan Order)
+	orderDetails(orders, dir, c.basepath)
+	for order := range orders {
+		files = append(files, order)
 	}
 
 	orderPage := OrdersPageParams{Orders: files}
 
-	t, _ := template.ParseFiles(c.staticpath + string(os.PathSeparator) + "orders.html")
+	t, _ := parseFiles(c.staticpath + string(os.PathSeparator) + "orders.html")
 
 	err = t.Execute(w, orderPage)
 	if err != nil {
 		log.Println("[OrderListHandler] Error creating template ", err.Error())
-		return
+		return OrdersPageParams{}
 	}
+	return orderPage
 }
 
 func orderUpdateHandler(_ http.ResponseWriter, r *http.Request) {
@@ -122,6 +141,13 @@ func orderGetHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Println("[orderGetHandler] Error loading template ", err.Error())
 		return
+	}
+}
+
+func OrdersHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		OrdersGetHandler(w, r, os.ReadDir, template.ParseFiles)
 	}
 }
 
