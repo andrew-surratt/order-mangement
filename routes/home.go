@@ -1,10 +1,10 @@
-package service
+package routes
 
 import (
 	"html/template"
 	"log"
 	"net/http"
-	"os"
+	"orders/service"
 )
 
 type HomePage struct {
@@ -16,10 +16,14 @@ type Link struct {
 }
 
 func HomePageHandler(w http.ResponseWriter, _ *http.Request) {
-	c := GetConfig()
-	homepage := HomePage{Links: []Link{{Path: c.basepath + "/orders"}}}
+	c := service.GetConfig()
+	homepage := HomePage{
+		Links: []Link{
+			{Path: c.Basepath + "/orders"},
+		},
+	}
 
-	t, _ := template.ParseFiles(c.staticpath + string(os.PathSeparator) + "home.html")
+	t, _ := service.ParseStaticPath(service.HOME_PATH, template.ParseFiles, c)
 
 	err := t.Execute(w, homepage)
 	if err != nil {

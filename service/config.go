@@ -1,11 +1,11 @@
 package service
 
 type Config struct {
-	datapath   string
-	staticpath string
-	basepath   string
+	Datapath   string
+	Staticpath string
+	Basepath   string
 }
 
 func GetConfig() *Config {
-	return &Config{datapath: "data", staticpath: "static", basepath: "http://localhost:8080"}
+	return &Config{Datapath: "data", Staticpath: "static", Basepath: "http://localhost:8080"}
 }

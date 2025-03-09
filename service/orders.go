@@ -1,28 +1,19 @@
 package service
 
 import (
-	"html/template"
-	"io"
+	"fmt"
+	"github.com/google/uuid"
 	"io/fs"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 type OrderData struct {
 	Title string
-	Body  []byte
-}
-
-type OrderTemplateParams struct {
-	Id   string
-	Body []byte
-}
-
-type OrdersPageParams struct {
-	Orders []Order
+	Text  []byte
 }
 
 type Order struct {
@@ -31,131 +22,163 @@ type Order struct {
 }
 
 // orderPath returns the local filepath of an order with the identifier `id`
-func orderPath(id string) string {
+func OrderPath(id string) string {
 	c := GetConfig()
-	return c.datapath + string(os.PathSeparator) + id + ".txt"
+	return c.Datapath + string(os.PathSeparator) + id + ".txt"
 }
 
-func (p *OrderData) save() error {
-	return os.WriteFile(orderPath(p.Title), p.Body, 0600)
+func (p *OrderData) save(writeFile func(name string, data []byte, perm fs.FileMode) error) error {
+	return writeFile(OrderPath(p.Title), p.Text, 0600)
 }
 
-func loadPage(title string) (*OrderData, error) {
-	filename := orderPath(title)
+func ReadOrderDetails(title string, readFile func(name string) ([]byte, error)) (*OrderData, error) {
+	filename := OrderPath(title)
 
-	body, err := os.ReadFile(filename)
+	text, err := readFile(filename)
 	if err != nil {
 		return nil, err
 	}
-	return &OrderData{Title: title, Body: body}, nil
+
+	return &OrderData{Title: title, Text: text}, nil
 }
 
-func orderDetails(orders chan Order, dir []os.DirEntry, basepath string) {
+func CollectOrderDetails(orders chan Order, dir []os.DirEntry, basepath string) {
 	go func() {
 		for _, d := range dir {
 			ext := filepath.Ext(d.Name())
-			orders <- Order{Id: d.Name(), Path: basepath + "/orders/" + strings.TrimSuffix(d.Name(), ext)}
+			name := strings.TrimSuffix(d.Name(), ext)
+			orders <- Order{Id: name, Path: strings.Join([]string{basepath, "/orders/", name}, "")}
 		}
 		close(orders)
 	}()
 }
 
-func OrdersGetHandler(
-	w http.ResponseWriter,
-	_ *http.Request,
+func ReadOrders(
 	readDir func(name string) ([]fs.DirEntry, error),
-	parseFiles func(filenames ...string) (*template.Template, error),
-) OrdersPageParams {
-	log.Println("[OrderListHandler] Listing orders")
+	config *Config,
+) []Order {
 
-	c := GetConfig()
-
-	dir, err := readDir(c.datapath)
+	dir, err := readDir(config.Datapath)
 	if err != nil {
 		log.Println("[OrderListHandler] Error reading orders ", err.Error())
-		return OrdersPageParams{}
+		return []Order{}
 	}
 
 	files := make([]Order, 0, len(dir))
 	log.Printf("[OrderListHandler] Found '%v' orders", len(dir))
+
 	orders := make(chan Order)
-	orderDetails(orders, dir, c.basepath)
+
+	CollectOrderDetails(orders, dir, config.Basepath)
+
 	for order := range orders {
 		files = append(files, order)
 	}
 
-	orderPage := OrdersPageParams{Orders: files}
-
-	t, _ := parseFiles(c.staticpath + string(os.PathSeparator) + "orders.html")
-
-	err = t.Execute(w, orderPage)
-	if err != nil {
-		log.Println("[OrderListHandler] Error creating template ", err.Error())
-		return OrdersPageParams{}
-	}
-	return orderPage
+	return files
 }
 
-func orderUpdateHandler(_ http.ResponseWriter, r *http.Request) {
-	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-			log.Println("[orderUpdateHandler] Error closing reader ", err.Error())
+func SaveOrder(title string, text string, writeFile func(name string, data []byte, perm fs.FileMode) error) (
+	OrderData,
+	error,
+) {
+	order := OrderData{Title: title, Text: []byte(text)}
+
+	return order, order.save(writeFile)
+}
+
+// fanOut Creates a number of channels equal to `numWorkers`, to save orders concurrently.
+// Returns an array of channels that return the save result
+func fanOut(
+	input <-chan string,
+	numWorkers int,
+	writeFile func(name string, data []byte, perm fs.FileMode) error,
+) []<-chan SaveOrderResult {
+	outputs := make([]<-chan SaveOrderResult, numWorkers)
+
+	for i := 0; i < numWorkers; i++ {
+		outputs[i] = goSaveOrder(input, writeFile)
+	}
+
+	return outputs
+}
+
+type SaveOrderResult struct {
+	order OrderData
+	err   error
+}
+
+// goSaveOrder Saves the orders from the channel `orderIds` and sends the result to returned channel
+func goSaveOrder(
+	orderIds <-chan string,
+	writeFile func(name string, data []byte, perm fs.FileMode) error,
+) <-chan SaveOrderResult {
+	output := make(chan SaveOrderResult)
+
+	go func() {
+		defer close(output)
+
+		for id := range orderIds {
+			text := fmt.Sprintf("Order details for %s", id)
+			order, err := SaveOrder(id, text, writeFile)
+
+			if err != nil {
+				log.Printf("[orderCreateHandler] Error saving order %s: %s\n", id, err.Error())
+			}
+
+			output <- SaveOrderResult{
+				order: order,
+				err:   err,
+			}
 		}
-	}(r.Body)
+	}()
 
-	body := r.FormValue("body")
-
-	log.Println("[orderUpdateHandler] Parsed body: ", body)
-
-	page := OrderData{Title: r.PathValue("id"), Body: []byte(body)}
-
-	err := page.save()
-	if err != nil {
-		log.Println("[orderUpdateHandler] Error saving page ", err.Error())
-		return
-	}
+	return output
 }
 
-func orderGetHandler(w http.ResponseWriter, r *http.Request) {
-	c := GetConfig()
+// fanIn takes an array of input channels and merges them into a single channel
+func fanIn(inputChannels []<-chan SaveOrderResult) <-chan SaveOrderResult {
+	output := make(chan SaveOrderResult)
+	var wg sync.WaitGroup
+	wg.Add(len(inputChannels))
 
-	id := r.PathValue("id")
-	log.Println("[orderGetHandler] Getting order ", id)
-
-	p, err := loadPage(id)
-	if err != nil {
-		log.Println("[orderGetHandler] Error loading page ", err.Error())
-		return
+	for _, input := range inputChannels {
+		go func(input <-chan SaveOrderResult) {
+			defer wg.Done()
+			for data := range input {
+				output <- data
+			}
+		}(input)
 	}
 
-	log.Println("[orderGetHandler] Parsed body: ", string(p.Body))
+	go func() {
+		wg.Wait()
+		close(output)
+	}()
 
-	t, err := template.ParseFiles(c.staticpath + string(os.PathSeparator) + "order.html")
-	if err != nil {
-		log.Println("[orderGetHandler] Error parsing template ", err.Error())
-		return
-	}
-
-	err = t.Execute(w, OrderTemplateParams{Id: id, Body: p.Body})
-	if err != nil {
-		log.Println("[orderGetHandler] Error loading template ", err.Error())
-		return
-	}
+	return output
 }
 
-func OrdersHandler(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case "GET":
-		OrdersGetHandler(w, r, os.ReadDir, template.ParseFiles)
-	}
-}
+// GenerateOrders generates `count` orders and saves them using the function `writeFile`
+func GenerateOrders(count int, writeFile func(name string, data []byte, perm fs.FileMode) error) []SaveOrderResult {
+	input := make(chan string)
 
-func OrderHandler(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case "POST":
-		orderUpdateHandler(w, r)
-	case "GET":
-		orderGetHandler(w, r)
+	numWorkers := 4
+	outputChannels := fanOut(input, numWorkers, writeFile)
+
+	mergedOutput := fanIn(outputChannels)
+
+	go func() {
+		defer close(input)
+		for i := 1; i <= count; i++ {
+			input <- uuid.New().String()
+		}
+	}()
+
+	var saveOrderResults []SaveOrderResult
+	for order := range mergedOutput {
+		saveOrderResults = append(saveOrderResults, order)
 	}
+
+	return saveOrderResults
 }

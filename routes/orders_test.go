@@ -1,4 +1,4 @@
-package service
+package routes
 
 import (
 	"html/template"
@@ -53,11 +53,13 @@ func TestOrderListHandler(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := OrdersGetHandler(tt.args.w, tt.args.in1, readDirMock, parseFilesMock)
-			if len(result.Orders) != tt.expectedLen {
-				t.Errorf("OrdersGetHandler() got = %v, want %v", len(result.Orders), tt.expectedLen)
-			}
-		})
+		t.Run(
+			tt.name, func(t *testing.T) {
+				result := OrdersGetHandler(tt.args.w, tt.args.in1, readDirMock, parseFilesMock)
+				if len(result.Orders) != tt.expectedLen {
+					t.Errorf("OrdersGetHandler() got = %v, want %v", len(result.Orders), tt.expectedLen)
+				}
+			},
+		)
 	}
 }
