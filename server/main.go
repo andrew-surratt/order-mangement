@@ -5,16 +5,16 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"orders/service"
+	"orders/routes"
 )
 
 // Run starts the application server with various routes.
 //
 // The function logs a fatal error if there are issues starting the server.
 func Run() {
-	http.HandleFunc("/orders/{id}", service.OrderHandler)
-	http.HandleFunc("/orders", service.OrdersHandler)
-	http.HandleFunc("/", service.HomePageHandler)
+	http.HandleFunc("/orders/{id}", routes.OrderHandler)
+	http.HandleFunc("/orders", routes.OrdersHandler)
+	http.HandleFunc("/", routes.HomePageHandler)
 
 	srv := &http.Server{Addr: "localhost:8080", Handler: nil}
 

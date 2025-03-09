@@ -1,4 +1,8 @@
 # Order Management
+Example order management API with simple web interface
+
+## Build
+`go build`
 
 ## Run
 `go run main.go`

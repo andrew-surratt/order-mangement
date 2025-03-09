@@ -1,4 +1,15 @@
 <h1>Orders</h1>
+
+<h2>Generate Orders</h2>
+<form action="/orders" method="POST">
+  <div><label>
+    Orders to create:
+    <input type="number" name="orderCount" min="1" max="100" required value="5"/>
+  </label></div>
+  <div><input type="submit" value="Generate"></div>
+</form>
+
+<h2>Order List ({{.OrderCount}})</h2>
 <ul>
   {{range .Orders}}
     <li><a href="{{.Path}}">{{.Id}}</a></li>
